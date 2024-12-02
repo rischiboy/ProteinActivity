@@ -269,9 +269,12 @@ def cross_validate_rf_model(
 
 
 def predict(model, X_test, output_file):
-    y_test = model.predict_classes(X_test)
-    output_df = pd.DataFrame(data=y_test, columns=["Active"])
+    y_test = model.predict(X_test)
+    y_labels = np.round(y_test).astype(int)  # Convert probabilities to binary labels
+    output_df = pd.DataFrame(data=y_labels, columns=["Active"])
     output_df.to_csv(output_file, header=False, index=False)
+
+    print(f"Predictions saved to {output_file}")
     return
 
 
