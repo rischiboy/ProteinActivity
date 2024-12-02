@@ -1,0 +1,44 @@
+seed: 42 # Seed for reproducibility
+cv_splits: 5 # Number of cross-validation splits
+sampling_factor: 0.2  # Oversampling factor for minority class
+
+# Path to the data files
+files:
+  train: "data/train.csv"
+  test: "data/test.csv"
+  output: "data/predictions.csv"
+
+
+# Neural network parameters
+nn:
+  num_units: [100, 50, 20]
+  regularization: 0.001
+  dropout_rate: 0.3
+  activation: "relu"
+  loss: "binary_crossentropy"
+  optimizer: "adam"
+
+nn_train:
+  epochs: 20
+  batch_size: 64
+
+early_stop:
+  monitor: "loss"
+  mode: "min"
+  patience: 5
+  restore_best_weights: true
+
+checkpoint:
+  filepath: "best_model.keras"
+  monitor: "val_f1"
+  mode: "max"
+  save_best_only: true
+
+# Random Forest parameters
+rf:
+  n_estimators: 100
+  max_depth: 32
+  min_samples_split: 8
+  min_samples_leaf: 1
+  max_features: "auto"
+  class_weight: "balanced"
