@@ -1,11 +1,13 @@
-from typing import List, Union
+from typing import Dict, List, Union
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.utils import compute_class_weight
-import tensorflow as tf
+import os
 from imblearn.over_sampling import RandomOverSampler
+
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+import tensorflow as tf
+
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -16,44 +18,21 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.utils import compute_class_weight
 
 import keras
 from keras.models import Sequential, load_model
 from keras.layers import (
     Dense,
     Dropout,
+    Input,
 )
 from keras.regularizers import l2
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 
 # from keras.wrappers.scikit_learn import KerasClassifier
 from scikeras.wrappers import KerasClassifier
-
-# Constants
-AMINOACIDS = [
-    "A",
-    "C",
-    "D",
-    "E",
-    "F",
-    "G",
-    "H",
-    "I",
-    "K",
-    "L",
-    "M",
-    "N",
-    "P",
-    "Q",
-    "R",
-    "S",
-    "T",
-    "U",
-    "V",
-    "W",
-    "Y",
-]
-CHARGED_AA = ["R", "H", "K", "D", "E"]
 
 
 def f1(y_true, y_pred):
@@ -85,8 +64,6 @@ def build_model(
     regularization: float,
     dropout_rate: float,
     activation: str,
-    loss: str,
-    optimizer: str,
     input_dim: int = 104,
 ):
     """
@@ -97,8 +74,6 @@ def build_model(
         regularization (float): L2 regularization strength.
         dropout_rate (float): Dropout rate for the Dropout layers.
         activation (str): Activation function for the Dense layers.
-        loss (str): Loss function for compiling the model
-        optimizer: Optimizer for adjusting the weights of the model.
         input_dim (int): Input dimension of the model.
 
     Returns:
@@ -108,22 +83,11 @@ def build_model(
     num_layers = len(num_units)
     layers = []
 
-    # Add the first Dense layer with input_shape specified
-    layers.append(
-        Dense(
-            units=num_units[0],
-            input_shape=(input_dim,),
-            activation=activation,
-            kernel_initializer="random_normal",
-            kernel_regularizer=l2(regularization),
-        )
-    )
-
-    if dropout_rate > 0:
-        layers.append(Dropout(rate=dropout_rate))
+    # Add the Input layer
+    layers.append(Input(shape=(input_dim,)))
 
     # Add intermediate Dense layers
-    for i in range(1, num_layers):
+    for i in range(num_layers):
         layers.append(
             Dense(
                 units=num_units[i],
@@ -142,23 +106,6 @@ def build_model(
     # Create the model
     model = Sequential(layers)
 
-    # Define metrics
-    metrics = [
-        # keras.metrics.FalseNegatives(name="fn"),
-        # keras.metrics.FalsePositives(name="fp"),
-        # keras.metrics.TrueNegatives(name="tn"),
-        # keras.metrics.TruePositives(name="tp"),
-        keras.metrics.BinaryAccuracy(name="accuracy"),
-        keras.metrics.Precision(name="precision"),
-        keras.metrics.Recall(name="recall"),
-        keras.metrics.AUC(name="auc"),
-        # keras.metrics.F1Score(name="f1", average="micro"),
-        f1,  # Custom F1 score
-    ]
-
-    # Compile the model
-    model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
-
     return model
 
 
@@ -166,22 +113,24 @@ def train_model(
     X_train: np.array,
     y_train: np.array,
     model_params: dict,
-    early_stop_params: dict = None,
-    checkpoint_params: dict = None,
-    class_weight: dict = None,
+    callbacks: List = None,
+    optimizer: str = "adam",
+    loss: str = "binary_crossentropy",
     epochs: int = 50,
     batch_size: int = 64,
 ):
 
-    # Define callbacks
-    callbacks = []
-    if early_stop_params:
-        callbacks.append(EarlyStopping(**early_stop_params))
-    if checkpoint_params:
-        callbacks.append(ModelCheckpoint(**checkpoint_params))
-
     # Build the model
     model = build_model(**model_params)
+
+    # Compile the model
+    model.compile(optimizer=optimizer, loss=loss, metrics=METRICS)
+
+    # Compute class weights
+    class_weight = compute_class_weight(
+        class_weight="balanced", classes=np.unique(y_train), y=y_train
+    )
+    class_weight = {0: class_weight[0], 1: class_weight[1]}  # Convert to dictionary
 
     # Train the model
     history = model.fit(
@@ -202,26 +151,33 @@ def cross_validate_model(
     model_params: dict,
     cv_splits: int = 5,
     seed: int = 42,
+    save_best: bool = False,
     **train_kwargs,
 ):
-    stf_kfold = StratifiedKFold(n_splits=cv_splits, random_state=seed)
+    stf_kfold = StratifiedKFold(n_splits=cv_splits, random_state=seed, shuffle=True)
     cv_scores = []
+    best_score = 0
+    best_model = None
 
     for train_idx, val_idx in stf_kfold.split(X_data, y_data):
         X_train, X_val = X_data[train_idx], X_data[val_idx]
         y_train, y_val = y_data[train_idx], y_data[val_idx]
 
-        # Compute class weights
-        class_weight = compute_class_weight(
-            class_weight="balanced", classes=np.unique(y_train), y=y_train
-        )
-        train_kwargs["class_weight"] = {0: class_weight[0], 1: class_weight[1]}
-
         # Train the model
         model, history = train_model(X_train, y_train, model_params, **train_kwargs)
-        scores = model.evaluate(X_val, y_val, verbose=2)
+        scores = model.evaluate(X_val, y_val, return_dict=True, verbose=2)
 
         cv_scores.append(scores)
+
+        if scores["f1"] > best_score:
+            best_score = scores["f1"]
+            best_model = model
+
+    if save_best:
+        best_model.save("cv_best_model.h5")
+
+    # Summarize the cross-validation scores
+    print(f"Cross-validation scores: {cv_scores}")
 
     return cv_scores
 
@@ -279,37 +235,48 @@ def predict(model, X_test, output_file):
 
 
 """
-Grid search for the best parameters. Not used because it's time consuming.
+Grid search to find the best hyperparameters for the Neural Network model.
 """
 
 
-def find_best_model_params(X_data, y_data):
-    epochs = 100
-    batch_sizes = [64, 128]
-    optimizers = ["Adam"]
-    num_units = [[50, 50], [100, 100]]
-    dropout_rate = [0.3]
-    reg_lambda = [0.001, 0.1]
-    activation = ["relu"]
-    loss = ["binary_crossentropy"]
+def find_best_nn_params(
+    X_data: np.array,
+    y_data: np.array,
+    model_params: Dict,
+    train_params: Dict,
+    callbacks: List = None,
+    seed: int = 42,
+    cv_splits: int = 5,
+    validation_split: float = 0.2,
+    save_best: bool = False,
+):
 
-    model_param = dict(
-        batch_size=batch_sizes,
-        num_units=num_units,
-        regularization=reg_lambda,
-        dropout_rate=dropout_rate,
-        activation=activation,
-        loss=loss,
-        optimizer=optimizers,
-    )
+    default_params = {k: v[0] for k, v in model_params.items()}
+    default_train_params = {k: v[0] for k, v in train_params.items()}
 
+    # Define the metric to optimize
     f1_scorer = make_scorer(f1_score)
 
-    cv_model = KerasClassifier(build_fn=build_model, epochs=epochs)
+    cv_model = KerasClassifier(
+        build_fn=build_model,
+        **default_params,
+        **default_train_params,
+        metrics=METRICS,
+        callbacks=callbacks,
+        validation_split=validation_split,
+        random_state=seed,
+        verbose=0,
+    )
     grid = GridSearchCV(
-        estimator=cv_model, param_grid=model_param, n_jobs=2, cv=5, scoring=f1_scorer
+        estimator=cv_model,
+        param_grid={**model_params, **train_params},
+        n_jobs=1,
+        cv=cv_splits,
+        scoring=f1_scorer,
     )
     grid_result = grid.fit(X_data, y_data)
+
+    # Summarize results
     print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
 
     mean_cv_score = grid_result.cv_results_["mean_test_score"]
@@ -317,6 +284,10 @@ def find_best_model_params(X_data, y_data):
 
     for mean, param in zip(mean_cv_score, params):
         print("%f with: %r" % (mean, param))
+
+    if save_best:
+        best_model = grid_result.best_estimator_.model
+        best_model.save("best_model.h5")
 
     return
 
@@ -400,7 +371,7 @@ def oversample(
     return oversampled_X, oversampled_y
 
 
-def main():
+def main(tune: bool = False, cv: bool = False):
 
     with open("config/params.yaml") as f:
         params = yaml.safe_load(f)
@@ -412,6 +383,7 @@ def main():
 
     CV_SPLITS = params["cv_splits"]
     SAMPLING_FACTOR = params["sampling_factor"]
+    VALIDATION_SPLIT = params["validation_split"]
 
     # Load the data files
     train_file = params["files"]["train"]
@@ -440,13 +412,52 @@ def main():
     label_count = np.bincount(y_train)
     print(f"Class 0: {label_count[0]}, Class 1: {label_count[1]}")
 
-    # Train the Neural Network model
+    # Define Callbacks
+    # callbacks = None
+    callbacks = [
+        EarlyStopping(**early_stop_params),
+        ModelCheckpoint(**checkpoint_params),
+    ]
+
+    ##############################
+    #### Neural Network Model ####
+    ##############################
+
+    # Perform grid search to find the best hyperparameters
+    if tune:
+        cv_model_params = params["cv"]["nn"]["model"]
+        cv_train_params = params["cv"]["nn"]["train"]
+        find_best_nn_params(
+            X_train,
+            y_train,
+            model_params=cv_model_params,
+            train_params=cv_train_params,
+            callbacks=callbacks,
+            seed=SEED,
+            cv_splits=CV_SPLITS,
+            validation_split=VALIDATION_SPLIT,
+            save_best=True,
+        )
+
+    # Perform cross-validation to evaluate the model
+    if cv:
+        cv_scores = cross_validate_model(
+            X_train,
+            y_train,
+            model_params=nn_params,
+            callbacks=callbacks,
+            seed=SEED,
+            cv_splits=CV_SPLITS,
+            save_best=True,
+            **nn_train_params,
+        )
+
+    # Train the Neural Network model on the full training set
     model, history = train_model(
         X_train,
         y_train,
         nn_params,
-        early_stop_params=early_stop_params,
-        checkpoint_params=checkpoint_params,
+        callbacks=callbacks,
         **nn_train_params,
     )
 
@@ -455,4 +466,45 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+
+    # Constants
+    AMINOACIDS = [
+        "A",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "K",
+        "L",
+        "M",
+        "N",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "Y",
+    ]
+    CHARGED_AA = ["R", "H", "K", "D", "E"]
+
+    # Define metrics
+    METRICS = [
+        # keras.metrics.FalseNegatives(name="fn"),
+        # keras.metrics.FalsePositives(name="fp"),
+        # keras.metrics.TrueNegatives(name="tn"),
+        # keras.metrics.TruePositives(name="tp"),
+        keras.metrics.BinaryAccuracy(name="accuracy"),
+        keras.metrics.Precision(name="precision"),
+        keras.metrics.Recall(name="recall"),
+        keras.metrics.AUC(name="auc"),
+        # keras.metrics.F1Score(name="f1", average="micro"),
+        f1,  # Custom F1 score
+    ]
+
+    main(tune=False, cv=True)

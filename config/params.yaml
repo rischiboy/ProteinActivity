@@ -1,6 +1,7 @@
 seed: 42 # Seed for reproducibility
 cv_splits: 5 # Number of cross-validation splits
 sampling_factor: 0.2  # Oversampling factor for minority class
+validation_split: 0.2 # Validation split for training
 
 # Path to the data files
 files:
@@ -15,10 +16,10 @@ nn:
   regularization: 0.001
   dropout_rate: 0.3
   activation: "relu"
-  loss: "binary_crossentropy"
-  optimizer: "adam"
 
 nn_train:
+  loss: "binary_crossentropy"
+  optimizer: "adam"
   epochs: 20
   batch_size: 64
 
@@ -42,3 +43,17 @@ rf:
   min_samples_leaf: 1
   max_features: "auto"
   class_weight: "balanced"
+
+# Cross-validation parameters
+cv:
+  nn:
+    model:
+      num_units: [[100, 50], [100, 50, 20]]
+      regularization: [0.001]
+      dropout_rate: [0.3]
+      activation: ["relu"]
+    train:
+      epochs: [20]
+      batch_size: [64, 128]
+      optimizer: ["adam"]
+      loss: ["binary_crossentropy"]
