@@ -174,10 +174,14 @@ def cross_validate_model(
             best_model = model
 
     if save_best:
-        best_model.save("cv_best_model.h5")
+        best_model.save("nn_best_model.h5")
 
     # Summarize the cross-validation scores
-    print(f"Cross-validation scores: {cv_scores}")
+    cv_scores_dict = {}
+    for key in cv_scores[0].keys():
+        cv_scores_dict[key] = [score[key] for score in cv_scores]
+
+    print(f"Cross-validation scores: {cv_scores_dict}")
 
     return cv_scores
 
@@ -287,7 +291,7 @@ def find_best_nn_params(
 
     if save_best:
         best_model = grid_result.best_estimator_.model
-        best_model.save("best_model.h5")
+        best_model.save("nn_best_param_model.h5")
 
     return
 
@@ -445,7 +449,7 @@ def main(tune: bool = False, cv: bool = False):
             X_train,
             y_train,
             model_params=nn_params,
-            callbacks=callbacks,
+            # callbacks=callbacks,
             seed=SEED,
             cv_splits=CV_SPLITS,
             save_best=True,
@@ -486,7 +490,6 @@ if __name__ == "__main__":
         "R",
         "S",
         "T",
-        "U",
         "V",
         "W",
         "Y",
