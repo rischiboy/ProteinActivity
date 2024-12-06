@@ -559,4 +559,4 @@ def main(tune: bool = False, cv: bool = False, train: bool = True):
 
 if __name__ == "__main__":
 
-    main(tune=True, cv=False, train=False)
+    main(tune=True, cv=True, train=True)
