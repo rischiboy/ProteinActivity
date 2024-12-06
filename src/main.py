@@ -59,12 +59,68 @@ def f1(y_true, y_pred):
     return tf.reduce_mean(f1)
 
 
+def focal_loss(gamma=2.0, alpha=0.25):
+    def loss(y_true, y_pred):
+        alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
+        p_t = y_true * y_pred + (1 - y_true) * (1 - y_pred)
+        return -tf.reduce_mean(
+            alpha_t * tf.math.pow(1 - p_t, gamma) * tf.math.log(p_t + 1e-8)
+        )
+
+    return loss
+
+
+##############################
+###### Global Variables ######
+##############################
+
+# Constants
+AMINOACIDS = [
+    "A",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "K",
+    "L",
+    "M",
+    "N",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "V",
+    "W",
+    "Y",
+]
+CHARGED_AA = ["R", "H", "K", "D", "E"]
+
+# Define metrics
+METRICS = [
+    # keras.metrics.FalseNegatives(name="fn"),
+    # keras.metrics.FalsePositives(name="fp"),
+    # keras.metrics.TrueNegatives(name="tn"),
+    # keras.metrics.TruePositives(name="tp"),
+    keras.metrics.BinaryAccuracy(name="accuracy"),
+    keras.metrics.Precision(name="precision"),
+    keras.metrics.Recall(name="recall"),
+    keras.metrics.AUC(name="auc"),
+    # keras.metrics.F1Score(name="f1", average="micro"),
+    f1,  # Custom F1 score
+    # focal_loss(),  # Custom focal loss
+]
+
+
 def build_model(
     num_units: List,
     regularization: float,
     dropout_rate: float,
     activation: str,
-    input_dim: int = 104,
+    input_dim: int = 100,
 ):
     """
     Build a modular sequential model.
@@ -116,8 +172,9 @@ def train_model(
     callbacks: List = None,
     optimizer: str = "adam",
     loss: str = "binary_crossentropy",
-    epochs: int = 50,
+    epochs: int = 20,
     batch_size: int = 64,
+    weighted: bool = True,
 ):
 
     # Build the model
@@ -127,10 +184,13 @@ def train_model(
     model.compile(optimizer=optimizer, loss=loss, metrics=METRICS)
 
     # Compute class weights
-    class_weight = compute_class_weight(
-        class_weight="balanced", classes=np.unique(y_train), y=y_train
-    )
-    class_weight = {0: class_weight[0], 1: class_weight[1]}  # Convert to dictionary
+    if weighted:
+        class_weight = compute_class_weight(
+            class_weight="balanced", classes=np.unique(y_train), y=y_train
+        )
+        class_weight = {0: class_weight[0], 1: class_weight[1]}  # Convert to dictionary
+    else:
+        class_weight = None
 
     # Train the model
     history = model.fit(
@@ -174,7 +234,10 @@ def cross_validate_model(
             best_model = model
 
     if save_best:
-        best_model.save("nn_best_model.h5")
+        directory = "cv_results"
+        best_model.save(f"{directory}/best_model.h5")
+        scores_df = pd.DataFrame(cv_scores)
+        scores_df.to_csv(f"{directory}/cv_scores.csv")
 
     # Summarize the cross-validation scores
     cv_scores_dict = {}
@@ -269,15 +332,30 @@ def find_best_nn_params(
         callbacks=callbacks,
         validation_split=validation_split,
         random_state=seed,
-        verbose=0,
+        verbose=1,
     )
-    grid = GridSearchCV(
-        estimator=cv_model,
-        param_grid={**model_params, **train_params},
-        n_jobs=1,
-        cv=cv_splits,
-        scoring=f1_scorer,
-    )
+
+    if save_best:
+        grid = GridSearchCV(
+            estimator=cv_model,
+            param_grid={**model_params, **train_params},
+            n_jobs=1,
+            cv=cv_splits,
+            scoring=f1_scorer,
+            refit=True,
+            error_score="raise",
+        )
+    else:
+        grid = GridSearchCV(
+            estimator=cv_model,
+            param_grid={**model_params, **train_params},
+            n_jobs=1,
+            cv=cv_splits,
+            scoring=f1_scorer,
+            refit=False,
+            error_score="raise",
+        )
+
     grid_result = grid.fit(X_data, y_data)
 
     # Summarize results
@@ -290,8 +368,12 @@ def find_best_nn_params(
         print("%f with: %r" % (mean, param))
 
     if save_best:
-        best_model = grid_result.best_estimator_.model
-        best_model.save("nn_best_param_model.h5")
+        directory = "grid_search_results"
+        best_model = grid_result.best_estimator_.model_
+        best_model.save(f"{directory}/best_model.h5")
+
+        results = pd.DataFrame(grid_result.cv_results_)
+        results.to_csv(f"{directory}/results.csv")
 
     return
 
@@ -301,7 +383,12 @@ Onehot encoding used to transform aminoacids to feature vectors, which can be se
 """
 
 
-def encode_protein(train_file, test_file):
+def encode_protein(
+    train_file: str,
+    test_file: str,
+    aminoacids: List = AMINOACIDS,
+    charged_aa: List = CHARGED_AA,
+):
 
     train_data = pd.read_csv(train_file)
     test_data = pd.read_csv(test_file)
@@ -315,7 +402,7 @@ def encode_protein(train_file, test_file):
 
     # Use one-hot encoding to transform amino acids to feature vectors
     # Positional encoding is used to encode the amino acids (i.e. the position of the amino acid in the sequence)
-    one_hot = OneHotEncoder(categories=4 * [AMINOACIDS])
+    one_hot = OneHotEncoder(categories=4 * [aminoacids])
     one_hot.fit(amino_acid_train)
 
     X_train = one_hot.transform(amino_acid_train).toarray()
@@ -326,7 +413,7 @@ def encode_protein(train_file, test_file):
 
     # Add charged amino acids as an additional feature
     one_hot_charged = OneHotEncoder(
-        categories=4 * [CHARGED_AA], handle_unknown="ignore"
+        categories=4 * [charged_aa], handle_unknown="ignore"
     )
     one_hot_charged.fit(amino_acid_train)
 
@@ -375,7 +462,7 @@ def oversample(
     return oversampled_X, oversampled_y
 
 
-def main(tune: bool = False, cv: bool = False):
+def main(tune: bool = False, cv: bool = False, train: bool = True):
 
     with open("config/params.yaml") as f:
         params = yaml.safe_load(f)
@@ -429,13 +516,13 @@ def main(tune: bool = False, cv: bool = False):
 
     # Perform grid search to find the best hyperparameters
     if tune:
-        cv_model_params = params["cv"]["nn"]["model"]
-        cv_train_params = params["cv"]["nn"]["train"]
+        tune_model_params = params["tune"]["nn"]["model"]
+        tune_train_params = params["tune"]["nn"]["train"]
         find_best_nn_params(
             X_train,
             y_train,
-            model_params=cv_model_params,
-            train_params=cv_train_params,
+            model_params=tune_model_params,
+            train_params=tune_train_params,
             callbacks=callbacks,
             seed=SEED,
             cv_splits=CV_SPLITS,
@@ -456,58 +543,20 @@ def main(tune: bool = False, cv: bool = False):
             **nn_train_params,
         )
 
-    # Train the Neural Network model on the full training set
-    model, history = train_model(
-        X_train,
-        y_train,
-        nn_params,
-        callbacks=callbacks,
-        **nn_train_params,
-    )
+    if train:
+        # Train the Neural Network model on the full training set
+        model, history = train_model(
+            X_train,
+            y_train,
+            nn_params,
+            callbacks=callbacks,
+            **nn_train_params,
+        )
 
-    # Predict on the test set
-    predict(model, X_test, output_file)
+        # Predict on the test set
+        predict(model, X_test, output_file)
 
 
 if __name__ == "__main__":
 
-    # Constants
-    AMINOACIDS = [
-        "A",
-        "C",
-        "D",
-        "E",
-        "F",
-        "G",
-        "H",
-        "I",
-        "K",
-        "L",
-        "M",
-        "N",
-        "P",
-        "Q",
-        "R",
-        "S",
-        "T",
-        "V",
-        "W",
-        "Y",
-    ]
-    CHARGED_AA = ["R", "H", "K", "D", "E"]
-
-    # Define metrics
-    METRICS = [
-        # keras.metrics.FalseNegatives(name="fn"),
-        # keras.metrics.FalsePositives(name="fp"),
-        # keras.metrics.TrueNegatives(name="tn"),
-        # keras.metrics.TruePositives(name="tp"),
-        keras.metrics.BinaryAccuracy(name="accuracy"),
-        keras.metrics.Precision(name="precision"),
-        keras.metrics.Recall(name="recall"),
-        keras.metrics.AUC(name="auc"),
-        # keras.metrics.F1Score(name="f1", average="micro"),
-        f1,  # Custom F1 score
-    ]
-
-    main(tune=False, cv=True)
+    main(tune=True, cv=False, train=False)

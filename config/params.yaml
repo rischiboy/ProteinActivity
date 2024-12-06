@@ -21,7 +21,8 @@ nn_train:
   loss: "binary_crossentropy"
   optimizer: "adam"
   epochs: 20
-  batch_size: 64
+  batch_size: 128
+  weighted: true
 
 early_stop:
   monitor: "loss"
@@ -45,7 +46,7 @@ rf:
   class_weight: "balanced"
 
 # Cross-validation parameters
-cv:
+tune:
   nn:
     model:
       num_units: [[100, 50], [100, 50, 20]]
